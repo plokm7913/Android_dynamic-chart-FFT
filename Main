@@ -1,0 +1,578 @@
+/********************************************************************
+Software License Agreement:
+
+ The software supplied herewith by Microchip Technology Incorporated
+ (the "Company") for its PIC(R) Microcontroller is intended and
+ supplied to you, the Company�s customer, for use solely and
+ exclusively on Microchip PIC Microcontroller products. The
+ software is owned by the Company and/or its supplier, and is
+ protected under applicable copyright laws. All rights are reserved.
+ Any use in violation of the foregoing restrictions may subject the
+ user to criminal sanctions under applicable laws, as well as to
+ civil liability for the breach of the terms and conditions of this
+ license.
+
+ THIS SOFTWARE IS PROVIDED IN AN �AS IS� CONDITION. NO WARRANTIES,
+ WHETHER EXPRESS, IMPLIED OR STATUTORY, INCLUDING, BUT NOT LIMITED
+ TO, IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+ PARTICULAR PURPOSE APPLY TO THIS SOFTWARE. THE COMPANY SHALL NOT,
+ IN ANY CIRCUMSTANCES, BE LIABLE FOR SPECIAL, INCIDENTAL OR
+ CONSEQUENTIAL DAMAGES, FOR ANY REASON WHATSOEVER.
+********************************************************************/
+
+package com.microchip.android.BasicAccessoryDemo_API12;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.Timer;
+import java.util.TimerTask;
+
+import org.achartengine.ChartFactory;
+import org.achartengine.GraphicalView;
+import org.achartengine.chart.PointStyle;
+import org.achartengine.model.XYMultipleSeriesDataset;
+import org.achartengine.model.XYSeries;
+import org.achartengine.renderer.XYMultipleSeriesRenderer;
+import org.achartengine.renderer.XYSeriesRenderer;
+
+import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
+import android.graphics.Color;
+import android.graphics.Paint.Align;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.Message;
+import android.util.Log;
+import android.view.View;
+import android.view.ViewGroup.LayoutParams;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+import android.widget.Toast;
+
+public class BasicAccessoryDemo extends Activity{
+	private final static int USBAccessoryWhat = 0;
+
+	public static final int UPDATE_LED_SETTING		 	= 1;
+	public static final int PUSHBUTTON_STATUS_CHANGE	= 2;
+	public static final int POT_STATUS_CHANGE			= 3;
+	public static final int APP_CONNECT					= (int)0xFE;
+	public static final int APP_DISCONNECT				= (int)0xFF;
+	
+	/**************************************************************************************************/
+	private Timer timer = new Timer();
+    private TimerTask task;
+    private Handler handler_plot;
+    private String title = "Signal Strength";
+    private XYSeries series;
+    private XYMultipleSeriesDataset mDataset;
+    private GraphicalView chart;
+    private XYMultipleSeriesRenderer renderer;
+    private Context context;
+    private float addX = -1; int addY;    
+    
+	private Long startTime,spentTime;
+	private TextView text;
+	private int numDataShow = 0;
+    /** Called when the activity is first created. */
+	
+	static int k=0;
+	private double[] array=new double[DataCount];
+	/**************************************************************************************************/
+	
+	
+	
+	static int DataCount=32768;
+	public static double[] FFTdata=new double[DataCount];
+	static int index=0;
+	static int j=0;
+	Button FFT,MeasureStart,MeasureStop,Save; 
+	
+	
+	
+	private boolean deviceAttached = false;
+	
+	private int firmwareProtocol = 0;
+	
+	private String TAG = "MICROCHIP";
+	
+	private enum ErrorMessageCode {
+		ERROR_OPEN_ACCESSORY_FRAMEWORK_MISSING,
+		ERROR_FIRMWARE_PROTOCOL
+	};
+	
+	private USBAccessoryManager accessoryManager; 
+	
+	/** Called when the activity is first created. */
+	@Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+	    
+		try {
+	        PackageManager manager = this.getPackageManager();
+	        PackageInfo info = manager.getPackageInfo(this.getPackageName(), 0);
+	        Log.d(TAG, "Info:" + info.packageName + "\n" + info.versionCode + "\n" + info.versionName); 
+		} catch (NameNotFoundException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
+            
+        setContentView(R.layout.main);
+        
+        FFT=(Button)this.findViewById(R.id.btn_FFT);
+        MeasureStart=(Button)this.findViewById(R.id.btn_MeasueStart);
+        MeasureStop=(Button)this.findViewById(R.id.btn_MeasueStop);
+        Save=(Button)this.findViewById(R.id.btn_save);
+        
+       	accessoryManager = new USBAccessoryManager(handler, USBAccessoryWhat);
+        
+        
+        
+        FFT.setOnClickListener(new Button.OnClickListener(){
+
+			@Override
+			public void onClick(View v) {
+				// TODO Auto-generated method stub
+				Intent i=new Intent();
+				i.setClass(BasicAccessoryDemo.this,SimpleFFTActivity.class);
+				Bundle bundle=new Bundle();
+				bundle.putDoubleArray("FFTdata", FFTdata);
+				i.putExtras(bundle);
+				startActivity(i);
+			}}) ;
+        /*
+        Dynamic_Chart.setOnClickListener(new Button.OnClickListener(){
+
+			@Override
+			public void onClick(View v) {
+				// TODO Auto-generated method stub
+				Intent i=new Intent();
+				i.setClass(BasicAccessoryDemo.this,AChartDemoActivity.class);
+				Bundle bundle=new Bundle();
+				bundle.putDoubleArray("FFTdata", FFTdata);
+				i.putExtras(bundle);
+				startActivity(i);
+			}});
+		*/
+        Save.setOnClickListener(new Button.OnClickListener(){
+        	public void onClick(View v) {
+        		Save();
+        	}
+        });
+        
+        /******************************************************************************/
+        //plot
+        /******************************************************************************/
+        context = getApplicationContext();
+        
+        
+        
+        //這裏獲得main介面上的佈局，下面會把圖表畫在這個佈局裏面
+        LinearLayout layout = (LinearLayout)findViewById(R.id.linearLayout1);
+        text = (TextView)findViewById(R.id.text);
+        
+        //這個類用來放置曲線上的所有點，是一個點的集合，根據這些點畫出曲線
+        series = new XYSeries(title);
+        
+        //創建一個數據集的實例，這個數據集將被用來創建圖表
+        mDataset = new XYMultipleSeriesDataset();
+        
+        //將點集添加到這個數據集中
+        mDataset.addSeries(series);
+        
+        //以下都是曲線的樣式和屬性等等的設置，renderer相當於一個用來給圖表做渲染的句柄
+        int color = Color.GREEN;
+        PointStyle style = PointStyle.POINT;
+        renderer = buildRenderer(color, style, true);
+        
+        //設置好圖表的樣式
+        setChartSettings(renderer, "X", "Y", 0, 100, 0, 90, Color.WHITE, Color.WHITE);
+        
+        //生成圖表
+		chart = ChartFactory.getLineChartView(context, mDataset, renderer);
+        
+        //將圖表添加到佈局中去
+		layout.addView(chart, new LayoutParams(LayoutParams.FILL_PARENT, LayoutParams.FILL_PARENT));
+		
+        //這裏的Handler實例將配合下面的Timer實例，完成定時更新圖表的功能
+	    handler_plot = new Handler() {
+        	@Override
+        	public void handleMessage(Message msg) {
+        		//刷新圖表
+        		
+        		
+        		if(j<2048)
+        		{
+	        		updateChart(array[j+index],j);        		
+	        		super.handleMessage(msg);  
+	        		j++;
+        		}
+        		else
+        		{
+        			series.clear();
+        			array=FFTdata;
+        			if(index>2048)
+        				index=k-2048;
+        			j=0;
+        		}
+        		
+        	}
+        };
+        
+        
+        task = new TimerTask() {
+        	@Override
+        	public void run() {
+        		Message message = new Message();
+        	    message.what = 1;
+        	    handler_plot.sendMessage(message);        	    
+        	}
+        };
+        startTime = System.currentTimeMillis();
+        timer.schedule(task, 0,1);
+        
+        
+        /**************************************************************************************************/
+        
+    }
+    
+	
+	/******************************************************************/
+	@Override
+    public void onDestroy() {
+    	//當結束程序時關掉Timer
+    	timer.cancel();
+    	
+    	super.onDestroy();
+    }
+    
+    protected XYMultipleSeriesRenderer buildRenderer(int color, PointStyle style, boolean fill) {
+    	XYMultipleSeriesRenderer renderer = new XYMultipleSeriesRenderer();
+    	
+    	//設置圖表中曲線本身的樣式，包括顏色、點的大小以及線的粗細等
+    	XYSeriesRenderer r = new XYSeriesRenderer();
+    	r.setColor(Color.RED);
+    	r.setPointStyle(style);
+    	r.setFillPoints(fill);
+    	r.setLineWidth(5);
+    	renderer.addSeriesRenderer(r);
+    	
+    	return renderer;
+    }
+    
+    protected void setChartSettings(XYMultipleSeriesRenderer renderer, String xTitle, String yTitle,
+    								double xMin, double xMax, double yMin, double yMax, int axesColor, int labelsColor) {
+    	//有關對圖表的渲染可參看api文檔
+    	renderer.setChartTitle(title);
+    	renderer.setXTitle(xTitle);
+    	renderer.setYTitle(yTitle);
+    	renderer.setXAxisMin(xMin);
+    	renderer.setXAxisMax(xMax);
+    	renderer.setYAxisMin(yMin);
+    	renderer.setYAxisMax(yMax);
+    	renderer.setAxesColor(axesColor);
+    	renderer.setLabelsColor(labelsColor);
+    	renderer.setShowGrid(true);
+    	renderer.setGridColor(Color.GREEN);
+    	renderer.setXLabels(20);
+    	renderer.setYLabels(10);
+    	renderer.setXTitle("Time");
+    	renderer.setYTitle("dBm");
+    	renderer.setYLabelsAlign(Align.RIGHT);
+    	renderer.setPointSize((float) 2);
+    	renderer.setShowLegend(false);
+        renderer.setPanEnabled(false, false);   
+    }
+    
+    private void updateChart(double data,int point) {
+    	
+    	int length = series.getItemCount();	
+    	//int i=0;
+	    	spentTime = System.currentTimeMillis() - startTime;
+	    	//設置好下一個需要增加的節點
+	    	//addX = (float)(spentTime/1)/1000;
+	    	addX =(float)(point*50)/1000;
+			//addY = (int)(Math.random() * 90);
+	    	addY=(int)data;
+    	
+		if(numDataShow/5>0){			
+			numDataShow=0;
+			mDataset.removeSeries(series);
+			series.add(addX, addY);
+			mDataset.addSeries(series);
+			chart.invalidate();
+		}
+		//DataBuffer[numData]=addY;
+		numDataShow++;
+		//numData++;
+		
+		text.setText(length +"");
+		
+    }
+    /************************************************************************************************/
+
+	
+	@Override
+	public void onStart() {
+		super.onStart();
+	    
+		this.setTitle("Basic Accessory Demo: Device not connected.");
+	}
+	
+    @Override
+    public void onResume() {
+    	super.onResume();
+ 
+	    
+        accessoryManager.enable(this, getIntent());
+        
+		
+    }
+    
+    @Override
+    public void onSaveInstanceState(Bundle savedInstanceState) {
+    	if(deviceAttached == false){
+    		return;
+    	}
+	    
+    	//Save the UI state into the savedInstanceState Bundle.
+		//  We only need to save the state of the LEDs since they are the only control.
+    	//  The state of the potentiometer and push buttons can be read and restored
+    	//  from their current hardware state.
+    	
+		
+		
+		//Call the super function that we are over writing now that we have saved our data.
+		super.onSaveInstanceState(savedInstanceState);
+    }
+    
+    @Override
+    public void onPause() {
+	    
+	    switch(firmwareProtocol) {
+		    case 2:
+				byte[] commandPacket = new byte[2];
+				commandPacket[0] = (byte) APP_DISCONNECT;
+				commandPacket[1] = 0;
+				accessoryManager.write(commandPacket);	
+				break;
+	    }
+	    
+		try {
+			while(accessoryManager.isClosed() == false) {
+				Thread.sleep(2000);
+			}
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+		
+    	super.onPause();
+    	accessoryManager.disable(this);
+    	disconnectAccessory();
+    }
+   
+    
+    /** Resets the demo application when a device detaches 
+     */
+    public void disconnectAccessory() {
+    	if(deviceAttached == false) {
+    		return;
+    	}
+    	
+    	Log.d(TAG,"disconnectAccessory()");
+    	
+    	this.setTitle("Basic Accessory Demo: Device not connected.");
+    	
+		
+    }
+    
+    /** 
+     * Handler for receiving messages from the USB Manager thread or
+     *   the LED control modules
+     */
+    private Handler handler = new Handler() {
+    	@Override
+    	public void handleMessage(Message msg) {
+    		byte[] commandPacket = new byte[2];
+    		
+			switch(msg.what)
+			{				
+			case UPDATE_LED_SETTING:
+				if(accessoryManager.isConnected() == false) {
+					return;
+				}
+				
+				commandPacket[0] = UPDATE_LED_SETTING;
+				commandPacket[1] = 0;
+				
+				
+				
+				accessoryManager.write(commandPacket);			
+				break;
+			
+			case USBAccessoryWhat:
+				switch(((USBAccessoryManagerMessage)msg.obj).type) {
+				case READ:
+					if(accessoryManager.isConnected() == false) {
+						return;
+					}
+					
+					while(true) {
+						if(accessoryManager.available() < 2) {
+							//All of our commands in this example are 2 bytes.  If there are less
+							//  than 2 bytes left, it is a partial command
+							break;
+						}
+					
+						accessoryManager.read(commandPacket);
+						
+						switch(commandPacket[0]) {
+						case POT_STATUS_CHANGE:
+							
+							
+							if((commandPacket[1] >= 0)) {
+								/*if(i>=(DataCount*10))
+							    	i=0;
+								if(i%10==0)
+								{
+									FFTdata[i/10]=commandPacket[1];
+								    progressBar.setProgress(commandPacket[1]);
+								}*/
+								if(k>=DataCount)
+								{
+									k=0;
+								}
+								
+								FFTdata[k]=commandPacket[1];
+								if((k%2048==0)&&(k!=0))
+								{
+									
+									
+								}
+								k++;
+							}
+							break;
+						
+						}
+						
+					}
+					break;
+				case CONNECTED:
+					break;
+				case READY:
+					setTitle("Basic Accessory Demo: Device connected.");
+					
+					Log.d(TAG, "BasicAccessoryDemo:Handler:READY");
+
+					
+			    	
+					String version = ((USBAccessoryManagerMessage)msg.obj).accessory.getVersion();
+					firmwareProtocol = getFirmwareProtocol(version);
+					
+					switch(firmwareProtocol){
+						case 1:
+							deviceAttached = true;
+							break;
+						case 2:
+							deviceAttached = true;
+							commandPacket[0] = (byte) APP_CONNECT;
+							commandPacket[1] = 0;
+							Log.d(TAG,"sending connect message.");
+							accessoryManager.write(commandPacket);
+							Log.d(TAG,"connect message sent.");
+							break;
+						default:
+							showErrorPage(ErrorMessageCode.ERROR_FIRMWARE_PROTOCOL);
+							break;
+					}
+					break;
+				case DISCONNECTED:
+					disconnectAccessory();
+					break;
+				}				
+				
+   				break;
+			default:
+				break;
+			}	//switch
+    	} //handleMessage
+    }; //handler
+    
+    private int getFirmwareProtocol(String version) {
+    	
+    	String major = "0";
+    	
+    	int positionOfDot;
+    	
+    	positionOfDot = version.indexOf('.');
+    	if(positionOfDot != -1) {
+    		major = version.substring(0, positionOfDot);
+    	}
+    	
+    	return new Integer(major).intValue();
+    }
+    
+ 
+    
+    
+    private void showErrorPage(ErrorMessageCode error){
+    	setContentView(R.layout.error);
+    	
+    	TextView errorMessage = (TextView)findViewById(R.id.error_message);
+    	
+    	switch(error){
+	    	case ERROR_OPEN_ACCESSORY_FRAMEWORK_MISSING:
+	    		errorMessage.setText(getResources().getText(R.string.error_missing_open_accessory_framework));
+	    		break;
+	    	case ERROR_FIRMWARE_PROTOCOL:
+	    		errorMessage.setText(getResources().getText(R.string.error_firmware_protocol));
+	    		break;
+    		default:
+    			errorMessage.setText(getResources().getText(R.string.error_default));
+    			break;
+    	}
+    }
+    private void Save()
+    {
+
+    	String path = Environment.getExternalStorageDirectory().getPath();	//建立自己的目錄
+        File dir = new File(path + "/SPI");
+        if (!dir.exists()){
+          dir.mkdir();
+        }
+
+        try {
+            File file = new File(path + "/SPI/" + "Data.txt");
+            FileOutputStream fout = new FileOutputStream(file);
+            for(int i=0;i<DataCount;i++)
+            {
+            	String str;
+            	str=String.valueOf(FFTdata[i])+" ";
+            fout.write(str.getBytes());
+            }
+            fout.close();
+            
+            Toast.makeText(BasicAccessoryDemo.this,"Saved",Toast.LENGTH_SHORT).show();
+         
+         } catch (FileNotFoundException e) {
+             e.printStackTrace();
+         }
+         catch (IOException e){
+        	 e.printStackTrace();
+         }
+    }
+
+    
+	
+} //Class definition BasicAccessoryDemo
